@@ -33,6 +33,68 @@ BrainrotData.BURGLAR_VISIT_TIME = 30 -- seconds a burglar stays before giving up
 BrainrotData.BURGLAR_WALK_TIME = 10 -- seconds for the burglar to reach a base
 BrainrotData.BURGLAR_FLEE_TIME = 12 -- seconds for the burglar to run for the exit
 
+-- Haunted Ghosts ---------------------------------------------------------------
+BrainrotData.GHOST_INTERVAL_MIN = 45 -- seconds of calm before ghosts may appear
+BrainrotData.GHOST_INTERVAL_MAX = 60 -- the spawn timer rolls in this window
+BrainrotData.GHOST_MAX_ALIVE = 3 -- never more than three ghosts loose at once
+BrainrotData.GHOST_HP = 3 -- whacks to defeat one ghost
+BrainrotData.GHOST_SPEED = 10 -- slower than a player, so you can outrun one
+BrainrotData.GHOST_STEAL_FLAT = 200 -- flat cash a ghost's touch steals
+BrainrotData.GHOST_STEAL_FRAC = 0.05 -- plus this fraction of the victim's cash
+BrainrotData.GHOST_CASH_DROP = 250 -- cash paid when a ghost is defeated
+BrainrotData.GHOST_MUTATION_DROP_CHANCE = 0.15 -- chance a defeated ghost drops a mutated brainrot onto the lane
+BrainrotData.GHOST_TOUCH_COOLDOWN = 5 -- seconds before the same ghost can steal from the same player again
+
+-- The Poltergeist Boss ---------------------------------------------------------
+BrainrotData.BOSS_HP_BASE = 8 -- boss HP with one player in the manor
+BrainrotData.BOSS_HP_PER_PLAYER = 4 -- extra HP per additional player
+BrainrotData.BOSS_PAYOUT = 5000 -- cash each nearby player gets when the boss falls
+BrainrotData.BOSS_PAYOUT_RANGE = 40 -- studs from the boss to earn the payout
+BrainrotData.BOSS_ARENA_MIN_Z = -105 -- the boss patrols the manor facade arena
+BrainrotData.BOSS_ARENA_MAX_Z = -78
+BrainrotData.BOSS_ARENA_HALF_X = 20
+
+-- The Ghost Burglar -----------------------------------------------------------
+BrainrotData.BURGLAR_HP = 3 -- whacks to drive the burglar off
+BrainrotData.BURGLAR_DEFEND_BONUS = 1000 -- cash paid to whoever defeats him
+
+-- The Manor Vault ---------------------------------------------------------------
+BrainrotData.VAULT_UNLOCK_REBIRTH = 1 -- rebirths needed to open the vault
+BrainrotData.VAULT_UNLOCK_CASH = 50000 -- or this much cash on hand
+BrainrotData.VAULT_PAYOUT = 10000 -- one-time cash when the vault opens
+
+-- Fog zones: thick haunted fog on the outer edges of the plaza that slows
+-- anyone walking through it. The rectangles must match the FogZone parts in
+-- default.project.json.
+BrainrotData.FOG_ZONES = {
+	{ minX = -128, maxX = -96, minZ = -60, maxZ = 60 },
+	{ minX = 96, maxX = 128, minZ = -60, maxZ = 60 },
+}
+BrainrotData.FOG_SLOW_SPEED = 8 -- WalkSpeed inside a fog zone
+
+-- Prize Book set bonuses: completing every brainrot of one rarity pays once.
+BrainrotData.SET_BONUSES = {
+	Common = 5000,
+	Uncommon = 10000,
+	Rare = 20000,
+	Epic = 40000,
+	Legendary = 75000,
+	Mythic = 150000,
+	Secret = 250000,
+	["Brainrot God"] = 500000,
+}
+
+-- How many brainrots of each rarity exist in the cast (for set progress).
+function BrainrotData.getRarityTotal(rarity)
+	local count = 0
+	for _, def in ipairs(BrainrotData.CAST) do
+		if def.rarity == rarity then
+			count += 1
+		end
+	end
+	return count
+end
+
 -- Bases, stealing, slapping ---------------------------------------------------
 BrainrotData.BASE_COUNT = 6
 BrainrotData.SLOTS_PER_BASE = 8
@@ -296,18 +358,30 @@ end
 
 -- Quests. id, the name the HUD shows, the target count, the cash reward.
 -- Progress is counted on the server; the client only displays this table.
+-- The list follows the goal loop: buy, fill, fight ghosts, hurt the Boss,
+-- rebirth, and complete the Prize Book.
 BrainrotData.QUESTS = {
 	{ id = "grab-5", name = "Grab 5 loose brainrots", target = 5, reward = 2000 },
 	{ id = "grab-15", name = "Grab 15 loose brainrots", target = 15, reward = 10000 },
 	{ id = "steal-1", name = "Steal 1 brainrot", target = 1, reward = 5000 },
+	{ id = "defeat-ghosts-3", name = "Defeat 3 Haunted Ghosts", target = 3, reward = 12000 },
+	{ id = "damage-boss", name = "Damage the Poltergeist Boss 12 times", target = 12, reward = 20000 },
 	{ id = "survive-2", name = "Survive 2 storms at home", target = 2, reward = 8000 },
 	{ id = "whack-1", name = "Whack the Ghost Burglar", target = 1, reward = 15000 },
 	{ id = "rebirth-1", name = "Rebirth once", target = 1, reward = 25000 },
 	{ id = "collect-100k", name = "Collect $100,000 total", target = 100000, reward = 20000 },
 	{ id = "own-legendary", name = "Own a Legendary or better", target = 1, reward = 15000 },
-	{ id = "own-mythic", name = "Own a Mythic or better", target = 1, reward = 30000 },
 	{ id = "full-base", name = "Fill all 8 base slots", target = 1, reward = 12000 },
-	{ id = "lock-3", name = "Lock your base 3 times", target = 3, reward = 3000 },
+}
+
+-- The reward rules, shown in the Prize Book so a new player can see how
+-- every reward is earned without guessing.
+BrainrotData.REWARD_RULES = {
+	"Cash: brainrots pay $/s on your base, quests pay cash, ghosts drop $250.",
+	"Mutations: storm spawns are always mutated; the Boss drops a mutated brainrot.",
+	"Rebirth: earn $100K total, then REBIRTH for x2 income (max x8).",
+	"Sets: complete every brainrot of one rarity for a set bonus (see right).",
+	"Vault: Rebirth 1 or $50,000 cash opens the Manor Vault (+$10,000).",
 }
 
 function BrainrotData.getQuestById(questId)

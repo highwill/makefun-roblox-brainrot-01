@@ -73,7 +73,106 @@ local function buildNameTag(model, displayName, def, effectiveRate, price, showB
 	rarityStripe.Parent = label
 
 	BrainrotFactory.setTagText(model, displayName, def, effectiveRate, price, showBuy)
+
+	-- The dot tag: a tiny rarity-coloured dot the client shows for brainrots
+	-- too far away to read the full label. One small dot, never a wall of text.
+	local dot = Instance.new("BillboardGui")
+	dot.Name = "DotTag"
+	dot.Size = UDim2.fromOffset(14, 14)
+	dot.ExtentsOffsetWorldSpace = Vector3.new(0, 6.5, 0)
+	dot.AlwaysOnTop = false
+	dot.Enabled = false
+	dot.Parent = model
+
+	local dotMark = Instance.new("Frame")
+	dotMark.Name = "Dot"
+	dotMark.Size = UDim2.fromScale(1, 1)
+	dotMark.BackgroundColor3 = BrainrotData.RARITY_COLORS[def.rarity]
+	dotMark.BorderSizePixel = 0
+	dotMark.Parent = dot
+	local dotCorner = Instance.new("UICorner")
+	dotCorner.CornerRadius = UDim.new(1, 0)
+	dotCorner.Parent = dotMark
+
 	return tag
+end
+
+-- The enemy tag: name on top, an HP bar underneath. Ghosts, the burglar and
+-- the Boss all wear one, so a player can always see what to hit and how much
+-- fight is left in it. The server updates the bar with setHealthBar.
+local function buildEnemyTag(model, nameText, nameColor, width, yOffset)
+	local tag = Instance.new("BillboardGui")
+	tag.Name = "EnemyTag"
+	tag.Size = UDim2.fromOffset(width, 52)
+	tag.ExtentsOffsetWorldSpace = Vector3.new(0, yOffset, 0)
+	tag.AlwaysOnTop = true
+	tag.Parent = model
+
+	local label = Instance.new("TextLabel")
+	label.Name = "TagLabel"
+	label.Size = UDim2.new(1, 0, 0, 26)
+	label.BackgroundColor3 = Color3.fromRGB(15, 12, 25)
+	label.BackgroundTransparency = 0.15
+	label.BorderSizePixel = 0
+	label.TextColor3 = nameColor
+	label.Font = Enum.Font.GothamBold
+	label.TextScaled = true
+	label.Text = nameText
+	label.Parent = tag
+
+	local barBack = Instance.new("Frame")
+	barBack.Name = "BarBack"
+	barBack.Position = UDim2.new(0, 0, 0, 30)
+	barBack.Size = UDim2.new(1, 0, 0, 12)
+	barBack.BackgroundColor3 = Color3.fromRGB(40, 10, 15)
+	barBack.BorderSizePixel = 0
+	barBack.Parent = tag
+
+	local barFill = Instance.new("Frame")
+	barFill.Name = "BarFill"
+	barFill.Size = UDim2.new(1, 0, 1, 0)
+	barFill.BackgroundColor3 = Color3.fromRGB(90, 230, 90)
+	barFill.BorderSizePixel = 0
+	barFill.Parent = barBack
+
+	return tag
+end
+
+-- Sets an enemy's HP bar from its current and maximum HP. Green above half,
+-- amber below half, red when nearly beaten.
+function BrainrotFactory.setHealthBar(model, hp, maxHp)
+	local tag = model:FindFirstChild("EnemyTag")
+	if tag == nil then
+		return
+	end
+	local barBack = tag:FindFirstChild("BarBack")
+	if barBack == nil then
+		return
+	end
+	local fill = barBack:FindFirstChild("BarFill")
+	if fill == nil then
+		return
+	end
+	local frac = math.clamp(hp / math.max(maxHp, 1), 0, 1)
+	fill.Size = UDim2.new(frac, 0, 1, 0)
+	if frac > 0.5 then
+		fill.BackgroundColor3 = Color3.fromRGB(90, 230, 90)
+	elseif frac > 0.25 then
+		fill.BackgroundColor3 = Color3.fromRGB(255, 190, 60)
+	else
+		fill.BackgroundColor3 = Color3.fromRGB(255, 70, 60)
+	end
+end
+
+-- A red outline so a threat reads as a threat at a glance.
+local function addThreatHighlight(model)
+	local highlight = Instance.new("Highlight")
+	highlight.Name = "ThreatHighlight"
+	highlight.FillColor = Color3.fromRGB(255, 40, 40)
+	highlight.FillTransparency = 0.85
+	highlight.OutlineColor = Color3.fromRGB(255, 60, 60)
+	highlight.OutlineTransparency = 0
+	highlight.Parent = model
 end
 
 -- Rewrites the tag text from the model's own attributes, so the server can flip
@@ -165,6 +264,34 @@ function BrainrotFactory.buildBrainrotModel(def, mutation)
 	return model
 end
 
+-- A Haunted Ghost: a small pale-green wisp that chases the nearest player and
+-- steals cash on touch. Three whacks defeat it. Its HP bar is the EnemyTag.
+function BrainrotFactory.buildGhostModel()
+	local model = Instance.new("Model")
+	model.Name = "Haunted Ghost"
+
+	local body = makePart("Body", Vector3.new(3.5, 3.5, 3.5), Color3.fromRGB(170, 230, 170), Enum.PartType.Ball, Enum.Material.Neon, 0.25)
+	body.CFrame = CFrame.new(0, 0, 0)
+	body.Parent = model
+	model.PrimaryPart = body
+
+	local eyeLeft = makePart("EyeLeft", Vector3.new(0.7, 0.9, 0.5), Color3.fromRGB(20, 20, 25))
+	eyeLeft.CFrame = CFrame.new(-0.8, 0.8, 1.7)
+	eyeLeft.Parent = model
+
+	local eyeRight = makePart("EyeRight", Vector3.new(0.7, 0.9, 0.5), Color3.fromRGB(20, 20, 25))
+	eyeRight.CFrame = CFrame.new(0.8, 0.8, 1.7)
+	eyeRight.Parent = model
+
+	buildEnemyTag(model, "HAUNTED GHOST  ·  WHACK! [F]", Color3.fromRGB(170, 255, 170), 170, 5)
+	BrainrotFactory.setHealthBar(model, BrainrotData.GHOST_HP, BrainrotData.GHOST_HP)
+	addThreatHighlight(model)
+
+	model:SetAttribute("HP", BrainrotData.GHOST_HP)
+	model:SetAttribute("MaxHP", BrainrotData.GHOST_HP)
+	return model
+end
+
 -- The Ghost Burglar: a black-clad thief with a mask and a loot sack who roams
 -- the manor grounds, steals from an unlocked base and runs for the exit.
 function BrainrotFactory.buildBurglarModel()
@@ -188,24 +315,12 @@ function BrainrotFactory.buildBurglarModel()
 	sack.CFrame = CFrame.new(2.6, 0.5, 0)
 	sack.Parent = model
 
-	local tag = Instance.new("BillboardGui")
-	tag.Name = "NameTag"
-	tag.Size = UDim2.fromOffset(260, 76)
-	tag.ExtentsOffsetWorldSpace = Vector3.new(0, 6.5, 0)
-	tag.Parent = model
+	buildEnemyTag(model, "THE GHOST BURGLAR  ·  WHACK! [F]", Color3.fromRGB(255, 120, 120), 260, 6.5)
+	BrainrotFactory.setHealthBar(model, BrainrotData.BURGLAR_HP, BrainrotData.BURGLAR_HP)
+	addThreatHighlight(model)
 
-	local label = Instance.new("TextLabel")
-	label.Name = "TagLabel"
-	label.Size = UDim2.fromScale(1, 1)
-	label.BackgroundColor3 = Color3.fromRGB(15, 12, 25)
-	label.BackgroundTransparency = 0.15
-	label.BorderSizePixel = 0
-	label.TextColor3 = Color3.fromRGB(255, 120, 120)
-	label.Font = Enum.Font.GothamBold
-	label.TextScaled = true
-	label.Text = "THE GHOST BURGLAR\nWHACK HIM! [F]"
-	label.Parent = tag
-
+	model:SetAttribute("HP", BrainrotData.BURGLAR_HP)
+	model:SetAttribute("MaxHP", BrainrotData.BURGLAR_HP)
 	return model
 end
 
@@ -228,23 +343,13 @@ function BrainrotFactory.buildStormBossModel()
 	crown.CFrame = CFrame.new(0, 12, 0) * CFrame.Angles(0, 0, math.rad(90))
 	crown.Parent = model
 
-	local tag = Instance.new("BillboardGui")
-	tag.Name = "NameTag"
-	tag.Size = UDim2.fromOffset(320, 80)
-	tag.ExtentsOffsetWorldSpace = Vector3.new(0, 14, 0)
-	tag.Parent = model
+	buildEnemyTag(model, "THE POLTERGEIST BOSS  ·  WHACK! [F]", Color3.fromRGB(180, 220, 255), 340, 14)
+	addThreatHighlight(model)
 
-	local label = Instance.new("TextLabel")
-	label.Name = "TagLabel"
-	label.Size = UDim2.fromScale(1, 1)
-	label.BackgroundColor3 = Color3.fromRGB(15, 12, 25)
-	label.BackgroundTransparency = 0.15
-	label.BorderSizePixel = 0
-	label.TextColor3 = Color3.fromRGB(180, 220, 255)
-	label.Font = Enum.Font.GothamBold
-	label.TextScaled = true
-	label.Text = "THE POLTERGEIST\nGET TO YOUR BASE!"
-	label.Parent = tag
+	-- The server overwrites these with the scaled HP right after spawning.
+	model:SetAttribute("HP", BrainrotData.BOSS_HP_BASE)
+	model:SetAttribute("MaxHP", BrainrotData.BOSS_HP_BASE)
+	BrainrotFactory.setHealthBar(model, BrainrotData.BOSS_HP_BASE, BrainrotData.BOSS_HP_BASE)
 
 	return model
 end

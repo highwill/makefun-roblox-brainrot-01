@@ -28,7 +28,19 @@ local stormLeft = 0
 local nextStormIn = BrainrotData.STORM_INTERVAL
 
 -- The Ghost Burglar's own little state machine: Idle, Roaming, Fleeing.
-local burglar = { model = nil, phase = "Idle", stolenModel = nil }
+local burglar = { model = nil, phase = "Idle", stolenModel = nil, hp = 0 }
+
+-- The Poltergeist Boss: alive only during a storm, in the manor facade arena.
+local boss = { model = nil, hp = 0, maxHp = 0, defeated = false }
+
+-- Haunted Ghosts loose in the manor: { model, hp, lastStealAt = {} }.
+local ghosts = {}
+local nextGhostIn = BrainrotData.GHOST_INTERVAL_MIN
+
+-- Forward declarations: the whack handler below calls these, and they are
+-- defined in their own sections further down the file.
+local damageGhost
+local damageBoss
 
 local conveyorFolder = Instance.new("Folder")
 conveyorFolder.Name = "ConveyorBrainrots"
@@ -52,6 +64,64 @@ local function broadcastNotify(text)
 	end
 end
 
+-- Pays cash into a player's pocket and keeps leaderstats in sync.
+local function payCash(player, amount)
+	local state = playerState[player]
+	if state == nil then
+		return
+	end
+	state.cash += amount
+	local leaderstats = player:FindFirstChild("leaderstats")
+	if leaderstats ~= nil then
+		leaderstats.Cash.Value = state.cash
+	end
+end
+
+-- A floating damage number: "-1" or "+$250" that rises and fades above a hit.
+local function spawnDamageNumber(position, text, color)
+	local anchor = Instance.new("Part")
+	anchor.Name = "DamageAnchor"
+	anchor.Anchored = true
+	anchor.CanCollide = false
+	anchor.CanTouch = false
+	anchor.CanQuery = false
+	anchor.Transparency = 1
+	anchor.Size = Vector3.new(0.5, 0.5, 0.5)
+	anchor.CFrame = CFrame.new(position)
+	anchor.Parent = Workspace
+
+	local billboard = Instance.new("BillboardGui")
+	billboard.Name = "DamageNumber"
+	billboard.Size = UDim2.fromOffset(120, 30)
+	billboard.ExtentsOffsetWorldSpace = Vector3.new(0, 2, 0)
+	billboard.AlwaysOnTop = true
+	billboard.Adornee = anchor
+	billboard.Parent = Workspace
+
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.fromScale(1, 1)
+	label.BackgroundTransparency = 1
+	label.Text = text
+	label.TextColor3 = color
+	label.Font = Enum.Font.GothamBold
+	label.TextScaled = true
+	label.TextStrokeTransparency = 0.2
+	label.Parent = billboard
+
+	task.spawn(function()
+		for step = 1, 10 do
+			if anchor.Parent == nil then
+				return
+			end
+			anchor.CFrame += Vector3.new(0, 0.35, 0)
+			label.TextTransparency = step / 10
+			task.wait(0.07)
+		end
+		billboard:Destroy()
+		anchor:Destroy()
+	end)
+end
+
 local function getHumanoid(player)
 	local character = player.Character
 	if character == nil then
@@ -68,22 +138,49 @@ local function getRootPart(player)
 	return character:FindFirstChild("HumanoidRootPart")
 end
 
-local function getWalkSpeedFor(player)
+-- True when a world position is inside one of the haunted fog zones.
+local function isInFogZone(position)
+	for _, zone in ipairs(BrainrotData.FOG_ZONES) do
+		if position.X >= zone.minX and position.X <= zone.maxX
+			and position.Z >= zone.minZ and position.Z <= zone.maxZ then
+			return true
+		end
+	end
+	return false
+end
+
+-- One place decides WalkSpeed, recomputed often so the storm slow, the fog
+-- slow, the whack stun and the Speed Boots never fight each other. Stun beats
+-- everything, then the storm slow, then the fog, then the boots.
+local function updateWalkSpeed(player)
 	local state = playerState[player]
-	if state == nil then
-		return BrainrotData.BASE_WALK_SPEED
+	local humanoid = getHumanoid(player)
+	if humanoid == nil then
+		return
 	end
-	if state.hasSpeedBoots then
-		return BrainrotData.SPEED_BOOTS_WALK_SPEED
+	local now = os.clock()
+	if state ~= nil and now < (state.stunnedUntil or 0) then
+		humanoid.WalkSpeed = 0
+		return
 	end
-	return BrainrotData.BASE_WALK_SPEED
+	if state ~= nil and now < (state.stormSlowedUntil or 0) then
+		humanoid.WalkSpeed = BrainrotData.STORM_SLOW_SPEED
+		return
+	end
+	local root = getRootPart(player)
+	if root ~= nil and isInFogZone(root.Position) then
+		humanoid.WalkSpeed = BrainrotData.FOG_SLOW_SPEED
+		return
+	end
+	if state ~= nil and state.hasSpeedBoots then
+		humanoid.WalkSpeed = BrainrotData.SPEED_BOOTS_WALK_SPEED
+		return
+	end
+	humanoid.WalkSpeed = BrainrotData.BASE_WALK_SPEED
 end
 
 local function refreshWalkSpeed(player)
-	local humanoid = getHumanoid(player)
-	if humanoid ~= nil then
-		humanoid.WalkSpeed = getWalkSpeedFor(player)
-	end
+	updateWalkSpeed(player)
 end
 
 -- Income per second from everything standing on the player's base, times their
@@ -175,9 +272,6 @@ local function checkStateQuests(player)
 	if bestRank >= BrainrotData.getRarityRank("Legendary") then
 		addQuestProgress(player, "own-legendary", 1)
 	end
-	if bestRank >= BrainrotData.getRarityRank("Mythic") then
-		addQuestProgress(player, "own-mythic", 1)
-	end
 	if countPlacedBrainrots(player) >= BrainrotData.SLOTS_PER_BASE then
 		addQuestProgress(player, "full-base", 1)
 	end
@@ -199,10 +293,111 @@ local function recordIndexEntry(player, model)
 	for _ in pairs(state.indexFound) do
 		foundCount += 1
 	end
+
+	-- Prize Book set bonus: owning every brainrot of one rarity pays once.
+	local newDef = nil
+	for _, castDef in ipairs(BrainrotData.CAST) do
+		if castDef.id == brainrotId then
+			newDef = castDef
+			break
+		end
+	end
+	if newDef ~= nil and not state.setBonuses[newDef.rarity] then
+		local foundOfRarity = 0
+		for _, castDef in ipairs(BrainrotData.CAST) do
+			if castDef.rarity == newDef.rarity and state.indexFound[castDef.id] then
+				foundOfRarity += 1
+			end
+		end
+		if foundOfRarity >= BrainrotData.getRarityTotal(newDef.rarity) then
+			state.setBonuses[newDef.rarity] = true
+			local bonus = BrainrotData.SET_BONUSES[newDef.rarity] or 0
+			state.cash += bonus
+			local leaderstats = player:FindFirstChild("leaderstats")
+			if leaderstats ~= nil then
+				leaderstats.Cash.Value = state.cash
+			end
+			sendNotify(player, "SET COMPLETE: every " .. newDef.rarity .. " brainrot!  +$" .. bonus .. "!")
+		end
+	end
+
 	GameEvent:FireAllClients({
 		type = "PrizeBook",
 		text = "PRIZE BOOK: new entry " .. model.Name .. " (" .. foundCount .. "/36)",
 	})
+end
+
+--------------------------------------------------------------------------------
+-- Goal, objective, set progress
+--------------------------------------------------------------------------------
+
+local function formatClock(seconds)
+	local minutes = math.floor(seconds / 60)
+	local rest = math.floor(seconds % 60)
+	if rest < 10 then
+		return minutes .. ":0" .. rest
+	end
+	return minutes .. ":" .. rest
+end
+
+-- The goal line: one line that always tells the player what the game is
+-- about right now. It replaces the old feature strip.
+local function computeGoalLine(player, indexCount)
+	local state = playerState[player]
+	local vaultText = "Vault: LOCKED"
+	if state ~= nil and state.vaultUnlocked then
+		vaultText = "Vault: OPEN"
+	end
+	if boss.model ~= nil then
+		return "GOAL: Prize Book " .. indexCount .. "/36  ·  BOSS " .. boss.hp .. "/" .. boss.maxHp .. " HP  ·  " .. vaultText
+	end
+	return "GOAL: Prize Book " .. indexCount .. "/36  ·  Boss in " .. formatClock(nextStormIn) .. "  ·  " .. vaultText
+end
+
+-- The current objective step: the one thing the player should do next. It
+-- changes as they progress, so the game always has a point from second one.
+local function computeObjectiveText(player, indexCount, slotsUsed)
+	local state = playerState[player]
+	if state == nil then
+		return "Buy a brainrot — touch one on the conveyor or press E"
+	end
+	if indexCount == 0 then
+		return "First: buy a brainrot — walk up to the conveyor and press E"
+	end
+	if slotsUsed < 3 then
+		return "Fill your base — buy brainrots off the conveyor"
+	end
+	if state.stars == 0 then
+		return "Earn $100K total, then REBIRTH [R] for x2 income"
+	end
+	if not state.vaultUnlocked then
+		return "Open the Vault — Rebirth 1 or $50K cash (Boss drops help!)"
+	end
+	return "Vault open! Complete the Prize Book — " .. indexCount .. "/36"
+end
+
+-- Per-rarity set progress for the Prize Book panel: found, total, bonus, paid.
+local function buildSetProgress(player)
+	local state = playerState[player]
+	local sets = {}
+	for _, rarity in ipairs(BrainrotData.RARITY_ORDER) do
+		local found = 0
+		if state ~= nil then
+			for _, castDef in ipairs(BrainrotData.CAST) do
+				if castDef.rarity == rarity and state.indexFound[castDef.id] then
+					found += 1
+				end
+			end
+		end
+		table.insert(sets, {
+			rarity = rarity,
+			found = found,
+			total = BrainrotData.getRarityTotal(rarity),
+			bonus = BrainrotData.SET_BONUSES[rarity] or 0,
+			paid = state ~= nil and state.setBonuses[rarity] == true,
+		})
+	end
+	return sets
 end
 
 --------------------------------------------------------------------------------
@@ -236,6 +431,14 @@ local function sendHudUpdate(player)
 		table.insert(indexIds, brainrotId)
 		indexCount += 1
 	end
+	local goalLine = computeGoalLine(player, indexCount)
+	local objectiveText = computeObjectiveText(player, indexCount, countPlacedBrainrots(player))
+	local ghostsActive = 0
+	for _, ghost in ipairs(ghosts) do
+		if ghost.model ~= nil and ghost.model.Parent ~= nil then
+			ghostsActive += 1
+		end
+	end
 	GameEvent:FireClient(player, {
 		type = "Hud",
 		cash = state.cash,
@@ -255,6 +458,16 @@ local function sendHudUpdate(player)
 		slotsUsed = countPlacedBrainrots(player),
 		slotsTotal = BrainrotData.SLOTS_PER_BASE,
 		burglarActive = burglar.model ~= nil,
+		goalLine = goalLine,
+		objectiveText = objectiveText,
+		bossActive = boss.model ~= nil,
+		bossHp = boss.hp,
+		bossMaxHp = boss.maxHp,
+		bossDefeated = boss.defeated,
+		vaultUnlocked = state.vaultUnlocked == true,
+		nextGhostIn = nextGhostIn,
+		ghostsActive = ghostsActive,
+		setProgress = buildSetProgress(player),
 	})
 end
 
@@ -309,6 +522,20 @@ local function spawnConveyorBrainrot(forceMutation)
 	model.Parent = conveyorFolder
 	model:PivotTo(CFrame.new(0, BrainrotData.CONVEYOR_HEIGHT, BrainrotData.CONVEYOR_START_Z))
 	attachTouchHandler(model)
+
+	-- The buy prompt: press E near a brainrot on the lane to buy it. Touch
+	-- still works too; the prompt is what makes the buy readable.
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.ActionText = "Buy"
+	prompt.ObjectText = model.Name .. " — $" .. model:GetAttribute("Price")
+	prompt.HoldDuration = 0
+	prompt.MaxActivationDistance = 14
+	prompt.RequiresLineOfSight = false
+	prompt.KeyboardKeyCode = Enum.KeyCode.E
+	prompt.Parent = model.PrimaryPart
+	prompt.Triggered:Connect(function(promptPlayer)
+		tryBuyBrainrot(promptPlayer, model)
+	end)
 
 	task.spawn(function()
 		local elapsed = 0
@@ -392,6 +619,10 @@ function tryBuyBrainrot(player, model)
 	end
 
 	state.cash -= price
+	local prompt = model.PrimaryPart:FindFirstChildOfClass("ProximityPrompt")
+	if prompt ~= nil then
+		prompt:Destroy()
+	end
 	model:SetAttribute("State", "Owned")
 	model:SetAttribute("OwnerUserId", player.UserId)
 	model.Parent = placedFolder
@@ -451,6 +682,7 @@ end
 -- Carried brainrots hover above the carrier's head, updated every frame.
 RunService.Heartbeat:Connect(function()
 	for player, state in pairs(playerState) do
+		updateWalkSpeed(player)
 		local model = state.carrying
 		if model ~= nil then
 			local root = getRootPart(player)
@@ -561,9 +793,35 @@ local function walkModelTo(model, targetPosition, duration, carriedModel)
 	return true
 end
 
+-- Forward: damageBurglar (below) calls whackBurglar (after it).
+local whackBurglar
+
+-- A whack lands on the Ghost Burglar: one damage off his three HP. At zero he
+-- drops the loot and the defender gets a cash bonus.
+local function damageBurglar(player)
+	if burglar.model == nil then
+		return
+	end
+	burglar.hp -= 1
+	local model = burglar.model
+	if model.Parent == nil then
+		return
+	end
+	model:SetAttribute("HP", burglar.hp)
+	BrainrotFactory.setHealthBar(model, burglar.hp, BrainrotData.BURGLAR_HP)
+	spawnDamageNumber(model:GetPivot().Position + Vector3.new(0, 6, 0), "-1", Color3.fromRGB(255, 220, 100))
+	if burglar.hp > 0 then
+		sendNotify(player, "You hit the Burglar! " .. burglar.hp .. "/" .. BrainrotData.BURGLAR_HP .. " HP left!")
+		return
+	end
+	payCash(player, BrainrotData.BURGLAR_DEFEND_BONUS)
+	sendNotify(player, "Burglar defeated! Defender bonus +$" .. BrainrotData.BURGLAR_DEFEND_BONUS)
+	whackBurglar(player)
+end
+
 -- Whacking the Ghost Burglar: his loot goes back to its owner, the whacker gets
 -- quest credit, and the burglar vanishes in a puff of indignation.
-local function whackBurglar(player)
+whackBurglar = function(player)
 	addQuestProgress(player, "whack-1", 1)
 	if burglar.stolenModel ~= nil then
 		local stolen = burglar.stolenModel
@@ -614,7 +872,33 @@ local function slapThief(player)
 	if burglar.model ~= nil and burglar.model.Parent ~= nil then
 		local burglarDistance = (burglar.model:GetPivot().Position - slapperRoot.Position).Magnitude
 		if burglarDistance <= BrainrotData.SLAP_RANGE then
-			whackBurglar(player)
+			damageBurglar(player)
+			return
+		end
+	end
+
+	-- Haunted Ghosts next: the closest one in range takes the hit.
+	local nearestGhost = nil
+	local nearestGhostDistance = BrainrotData.SLAP_RANGE
+	for _, ghost in ipairs(ghosts) do
+		if ghost.model ~= nil and ghost.model.Parent ~= nil then
+			local ghostDistance = (ghost.model:GetPivot().Position - slapperRoot.Position).Magnitude
+			if ghostDistance <= nearestGhostDistance then
+				nearestGhost = ghost
+				nearestGhostDistance = ghostDistance
+			end
+		end
+	end
+	if nearestGhost ~= nil then
+		damageGhost(player, nearestGhost)
+		return
+	end
+
+	-- Then the Poltergeist Boss, when he is up in the arena.
+	if boss.model ~= nil and boss.model.Parent ~= nil then
+		local bossDistance = (boss.model:GetPivot().Position - slapperRoot.Position).Magnitude
+		if bossDistance <= BrainrotData.SLAP_RANGE then
+			damageBoss(player)
 			return
 		end
 	end
@@ -643,20 +927,13 @@ local function slapThief(player)
 	returnBrainrotToOwner(stolen)
 
 	local thiefRoot = getRootPart(nearestThief)
-	local thiefHumanoid = getHumanoid(nearestThief)
 	if thiefRoot ~= nil then
 		local away = (thiefRoot.Position - slapperRoot.Position).Unit
 		away = Vector3.new(away.X, 0, away.Z).Unit
 		thiefRoot.CFrame = thiefRoot.CFrame + away * BrainrotData.SLAP_KNOCKBACK
 	end
-	if thiefHumanoid ~= nil then
-		thiefHumanoid.WalkSpeed = 0
-		task.delay(BrainrotData.SLAP_STUN_TIME, function()
-			if thiefHumanoid.Parent ~= nil then
-				thiefHumanoid.WalkSpeed = getWalkSpeedFor(nearestThief)
-			end
-		end)
-	end
+	thiefState.stunnedUntil = os.clock() + BrainrotData.SLAP_STUN_TIME
+	updateWalkSpeed(nearestThief)
 
 	sendNotify(player, "WHACK! " .. nearestThief.DisplayName .. " dropped " .. stolen.Name .. "!")
 	sendNotify(nearestThief, player.DisplayName .. " whacked you! Your stolen brainrot went home!")
@@ -719,6 +996,7 @@ local function runBurglarVisit()
 	burglar.model = model
 	burglar.phase = "Roaming"
 	burglar.stolenModel = nil
+	burglar.hp = BrainrotData.BURGLAR_HP
 	GameEvent:FireAllClients({ type = "Burglar", active = true })
 	broadcastNotify("👻 THE GHOST BURGLAR IS IN THE MANOR! Whack him! [F]")
 	for player, _ in pairs(playerState) do
@@ -802,6 +1080,195 @@ task.spawn(function()
 end)
 
 --------------------------------------------------------------------------------
+-- Haunted Ghosts
+--------------------------------------------------------------------------------
+
+local GHOST_SPAWN_POINTS = {
+	Vector3.new(0, 2.5, -100),
+	Vector3.new(-120, 2.5, 0),
+	Vector3.new(120, 2.5, 0),
+	Vector3.new(0, 2.5, 100),
+}
+
+-- One ghost: it spawns at a random edge of the plaza and chases the nearest
+-- player until whacked. Touch steals cash and knocks the victim back.
+local function spawnGhost()
+	local model = BrainrotFactory.buildGhostModel()
+	local spawnPoint = GHOST_SPAWN_POINTS[math.random(1, #GHOST_SPAWN_POINTS)]
+	model.Parent = Workspace
+	model:PivotTo(CFrame.new(spawnPoint))
+	local ghost = { model = model, hp = BrainrotData.GHOST_HP, lastStealAt = {} }
+	table.insert(ghosts, ghost)
+	broadcastNotify("A Haunted Ghost is loose in the manor! Whack it! [F]")
+
+	task.spawn(function()
+		while model.Parent ~= nil do
+			-- Find the nearest player.
+			local nearestPlayer = nil
+			local nearestDistance = math.huge
+			for player, _ in pairs(playerState) do
+				local root = getRootPart(player)
+				if root ~= nil then
+					local distance = (root.Position - model:GetPivot().Position).Magnitude
+					if distance < nearestDistance then
+						nearestDistance = distance
+						nearestPlayer = player
+					end
+				end
+			end
+			if nearestPlayer == nil then
+				task.wait(0.5)
+			else
+				local root = getRootPart(nearestPlayer)
+				if root == nil then
+					task.wait(0.5)
+				else
+					local position = model:GetPivot().Position
+					local direction = root.Position - position
+					direction = Vector3.new(direction.X, 0, direction.Z)
+					if direction.Magnitude > 2 then
+						direction = direction.Unit
+						local bob = math.abs(math.sin(os.clock() * 4)) * 0.4
+						model:PivotTo(CFrame.new(position + direction * BrainrotData.GHOST_SPEED * 0.1 + Vector3.new(0, bob, 0)))
+					end
+					-- Touch: steal cash, knock the victim back, then cool down.
+					if nearestDistance <= 5 then
+						local now = os.clock()
+						local lastSteal = ghost.lastStealAt[nearestPlayer] or 0
+						if now - lastSteal >= BrainrotData.GHOST_TOUCH_COOLDOWN then
+							ghost.lastStealAt[nearestPlayer] = now
+							local victimState = playerState[nearestPlayer]
+							if victimState ~= nil then
+								local stolen = BrainrotData.GHOST_STEAL_FLAT
+									+ math.floor(victimState.cash * BrainrotData.GHOST_STEAL_FRAC)
+								victimState.cash = math.max(victimState.cash - stolen, 0)
+								local leaderstats = nearestPlayer:FindFirstChild("leaderstats")
+								if leaderstats ~= nil then
+									leaderstats.Cash.Value = victimState.cash
+								end
+								spawnDamageNumber(root.Position + Vector3.new(0, 4, 0), "-$" .. stolen, Color3.fromRGB(255, 80, 80))
+								sendNotify(nearestPlayer, "A ghost stole $" .. stolen .. " from you! Whack it back!")
+								local away = root.Position - position
+								away = Vector3.new(away.X, 0, away.Z)
+								if away.Magnitude > 0.1 then
+									root.CFrame += away.Unit * 6
+								end
+							end
+						end
+					end
+					task.wait(0.1)
+				end
+			end
+		end
+	end)
+end
+
+-- Removes a ghost from the live list (called on defeat).
+local function removeGhost(ghost)
+	for i, entry in ipairs(ghosts) do
+		if entry == ghost then
+			table.remove(ghosts, i)
+			return
+		end
+	end
+end
+
+-- A whack lands on a ghost: one damage, a damage number, and at zero HP the
+-- ghost pops into cash — and sometimes a mutated brainrot on the lane.
+damageGhost = function(player, ghost)
+	ghost.hp -= 1
+	local model = ghost.model
+	if model.Parent == nil then
+		return
+	end
+	model:SetAttribute("HP", ghost.hp)
+	BrainrotFactory.setHealthBar(model, ghost.hp, BrainrotData.GHOST_HP)
+	spawnDamageNumber(model:GetPivot().Position + Vector3.new(0, 5, 0), "-1", Color3.fromRGB(255, 220, 100))
+	if ghost.hp > 0 then
+		return
+	end
+	removeGhost(ghost)
+	model:Destroy()
+	payCash(player, BrainrotData.GHOST_CASH_DROP)
+	sendNotify(player, "Ghost defeated!  +$" .. BrainrotData.GHOST_CASH_DROP)
+	local state = playerState[player]
+	if state ~= nil then
+		state.ghostsDefeated += 1
+		addQuestProgress(player, "defeat-ghosts-3", 1)
+	end
+	if math.random() < BrainrotData.GHOST_MUTATION_DROP_CHANCE then
+		spawnConveyorBrainrot(true)
+		broadcastNotify("The ghost dropped a MUTATED brainrot on the lane!")
+	end
+	for otherPlayer, _ in pairs(playerState) do
+		sendHudUpdate(otherPlayer)
+	end
+end
+
+-- Ghosts spawn from the per-second money tick, which counts nextGhostIn down
+-- so the HUD can show exactly when the next ghosts arrive.
+
+--------------------------------------------------------------------------------
+-- The Manor Vault
+--------------------------------------------------------------------------------
+
+-- Opens the vault: the door slides down, the treasure lights up, the opener
+-- gets the payout once, and the whole server hears about it.
+local function openVault(player)
+	local state = playerState[player]
+	if state == nil or state.vaultUnlocked then
+		return
+	end
+	state.vaultUnlocked = true
+	payCash(player, BrainrotData.VAULT_PAYOUT)
+	local door = Workspace:FindFirstChild("VaultDoor")
+	if door ~= nil then
+		door.Transparency = 0.75
+		door.CanCollide = false
+		door.CFrame -= Vector3.new(0, 12, 0)
+	end
+	local sign = Workspace:FindFirstChild("VaultSign")
+	if sign ~= nil then
+		local gui = sign:FindFirstChild("SignGui")
+		if gui ~= nil then
+			local label = gui:FindFirstChild("SignLabel")
+			if label ~= nil then
+				label.Text = "MANOR VAULT — OPEN"
+			end
+		end
+	end
+	local treasure = Workspace:FindFirstChild("VaultTreasure")
+	if treasure ~= nil then
+		for _, part in ipairs(treasure:GetDescendants()) do
+			if part:IsA("BasePart") then
+				part.Transparency = 0
+			end
+		end
+		local chest = treasure:FindFirstChild("Chest")
+		local light = Instance.new("PointLight")
+		light.Color = Color3.fromRGB(255, 215, 0)
+		light.Brightness = 2
+		light.Range = 24
+		light.Parent = chest or treasure
+	end
+	broadcastNotify("🔓 " .. player.DisplayName .. " OPENED THE MANOR VAULT!  +$" .. BrainrotData.VAULT_PAYOUT)
+	for otherPlayer, _ in pairs(playerState) do
+		sendHudUpdate(otherPlayer)
+	end
+end
+
+-- Checks the vault condition after anything that changes cash or rebirths.
+local function checkVaultUnlock(player)
+	local state = playerState[player]
+	if state == nil or state.vaultUnlocked then
+		return
+	end
+	if state.stars >= BrainrotData.VAULT_UNLOCK_REBIRTH or state.cash >= BrainrotData.VAULT_UNLOCK_CASH then
+		openVault(player)
+	end
+end
+
+--------------------------------------------------------------------------------
 -- Money tick, storm countdown, HUD
 --------------------------------------------------------------------------------
 
@@ -821,6 +1288,7 @@ task.spawn(function()
 				end
 			end
 			setQuestProgress(player, "collect-100k", state.totalEarned)
+			checkVaultUnlock(player)
 		end
 
 		if stormActive then
@@ -832,6 +1300,28 @@ task.spawn(function()
 			nextStormIn -= BrainrotData.MONEY_TICK
 			if nextStormIn <= 0 then
 				startSnackStorm()
+			end
+		end
+
+		-- Ghosts arrive on a countdown the HUD can show.
+		nextGhostIn -= BrainrotData.MONEY_TICK
+		if nextGhostIn <= 0 then
+			nextGhostIn = math.random(BrainrotData.GHOST_INTERVAL_MIN, BrainrotData.GHOST_INTERVAL_MAX)
+			local alive = 0
+			for _, ghost in ipairs(ghosts) do
+				if ghost.model ~= nil and ghost.model.Parent ~= nil then
+					alive += 1
+				end
+			end
+			local playerCount = 0
+			for _ in pairs(playerState) do
+				playerCount += 1
+			end
+			if playerCount > 0 and alive < BrainrotData.GHOST_MAX_ALIVE then
+				local count = math.random(1, math.min(3, BrainrotData.GHOST_MAX_ALIVE - alive))
+				for _ = 1, count do
+					spawnGhost()
+				end
 			end
 		end
 
@@ -860,15 +1350,8 @@ local function punishPlayerCaughtOutside(player)
 		return -- safe at home
 	end
 	state.punishedThisStorm = true
-	local humanoid = getHumanoid(player)
-	if humanoid ~= nil then
-		humanoid.WalkSpeed = BrainrotData.STORM_SLOW_SPEED
-		task.delay(BrainrotData.STORM_SLOW_TIME, function()
-			if humanoid.Parent ~= nil then
-				humanoid.WalkSpeed = getWalkSpeedFor(player)
-			end
-		end)
-	end
+	state.stormSlowedUntil = os.clock() + BrainrotData.STORM_SLOW_TIME
+	updateWalkSpeed(player)
 	local lost = math.floor(state.cash * BrainrotData.STORM_CASH_LOSS)
 	state.cash -= lost
 	local leaderstats = player:FindFirstChild("leaderstats")
@@ -878,33 +1361,89 @@ local function punishPlayerCaughtOutside(player)
 	sendNotify(player, "The storm caught you outside! -$" .. lost .. " and slowed!")
 end
 
--- The Poltergeist stomps down the plaza from the Manor Gate to the Crypt Gate,
--- bobbing with every step, while the fog wall sweeps behind him.
-local function bossStompAcrossPlaza()
-	local boss = BrainrotFactory.buildStormBossModel()
+-- The Poltergeist Boss, the storm's climax: he spawns in the manor facade
+-- arena with HP that scales with the player count, and patrols the arena
+-- instead of stomping across the whole plaza.
+local function spawnBoss()
+	local playerCount = 0
+	for _ in pairs(playerState) do
+		playerCount += 1
+	end
+	local model = BrainrotFactory.buildStormBossModel()
 	local spawnPoint = Workspace:WaitForChild("BossSpawn")
-	boss.Parent = Workspace
-	boss:PivotTo(CFrame.new(spawnPoint.Position + Vector3.new(0, 6, 0)))
+	model.Parent = Workspace
+	model:PivotTo(CFrame.new(spawnPoint.Position + Vector3.new(0, 6, 0)))
+	boss.model = model
+	boss.maxHp = BrainrotData.BOSS_HP_BASE + BrainrotData.BOSS_HP_PER_PLAYER * math.max(playerCount - 1, 0)
+	boss.hp = boss.maxHp
+	boss.defeated = false
+	model:SetAttribute("HP", boss.hp)
+	model:SetAttribute("MaxHP", boss.maxHp)
+	BrainrotFactory.setHealthBar(model, boss.hp, boss.maxHp)
+	GameEvent:FireAllClients({ type = "Boss", active = true })
+	broadcastNotify("👻 THE POLTERGEIST BOSS IS IN THE ARENA! Whack him together! [F]")
 
 	task.spawn(function()
-		local elapsed = 0
-		while elapsed < BrainrotData.STORM_DURATION do
-			if boss.Parent == nil then
-				return
+		local direction = 1
+		while model.Parent ~= nil and stormActive do
+			local position = model:GetPivot().Position
+			local nextX = position.X + direction * 0.35
+			if nextX > BrainrotData.BOSS_ARENA_HALF_X then
+				direction = -1
+			elseif nextX < -BrainrotData.BOSS_ARENA_HALF_X then
+				direction = 1
 			end
-			if stormActive then
-				elapsed += 0.1
-				local t = elapsed / BrainrotData.STORM_DURATION
-				local z = -105 + 225 * t
-				local stomp = math.abs(math.sin(t * math.pi * 10)) * 1.5
-				boss:PivotTo(CFrame.new(0, 6 + stomp, z))
-			end
+			local nextZ = BrainrotData.BOSS_ARENA_MIN_Z + 12 + math.sin(os.clock() * 0.5) * 8
+			local bob = math.abs(math.sin(os.clock() * 3)) * 1.2
+			model:PivotTo(CFrame.new(nextX, 6 + bob, nextZ))
 			task.wait(0.1)
 		end
-		if boss.Parent ~= nil then
-			boss:Destroy()
-		end
 	end)
+end
+
+-- A whack lands on the Boss: one damage, quest credit for the hitter, and at
+-- zero HP the Boss falls — a guaranteed mutated brainrot, cash for everyone
+-- nearby, and the storm's climax pays out.
+damageBoss = function(player)
+	if boss.model == nil then
+		return
+	end
+	boss.hp -= 1
+	local model = boss.model
+	if model.Parent == nil then
+		return
+	end
+	model:SetAttribute("HP", boss.hp)
+	BrainrotFactory.setHealthBar(model, boss.hp, boss.maxHp)
+	spawnDamageNumber(model:GetPivot().Position + Vector3.new(0, 10, 0), "-1", Color3.fromRGB(255, 220, 100))
+	local state = playerState[player]
+	if state ~= nil then
+		state.bossDamage += 1
+		addQuestProgress(player, "damage-boss", 1)
+	end
+	if boss.hp > 0 then
+		for otherPlayer, _ in pairs(playerState) do
+			sendHudUpdate(otherPlayer)
+		end
+		return
+	end
+	boss.defeated = true
+	local bossPosition = model:GetPivot().Position
+	model:Destroy()
+	boss.model = nil
+	GameEvent:FireAllClients({ type = "Boss", active = false })
+	spawnConveyorBrainrot(true)
+	for otherPlayer, _ in pairs(playerState) do
+		local root = getRootPart(otherPlayer)
+		if root ~= nil and (root.Position - bossPosition).Magnitude <= BrainrotData.BOSS_PAYOUT_RANGE then
+			payCash(otherPlayer, BrainrotData.BOSS_PAYOUT)
+			sendNotify(otherPlayer, "BOSS DEFEATED!  +$" .. BrainrotData.BOSS_PAYOUT)
+		end
+	end
+	broadcastNotify("👻 THE POLTERGEIST BOSS IS DEFEATED! A mutated brainrot is on the lane!")
+	for otherPlayer, _ in pairs(playerState) do
+		sendHudUpdate(otherPlayer)
+	end
 end
 
 -- The fog wall sweeps the grounds from one end to the other over the storm.
@@ -936,7 +1475,7 @@ function startSnackStorm()
 		punishPlayerCaughtOutside(player)
 	end
 	sweepStormWall()
-	bossStompAcrossPlaza()
+	spawnBoss()
 
 	-- The storm's own gift: mutated brainrots drop onto the lane, one a second.
 	-- Every brainrot spawned during a storm is mutated, guaranteed.
@@ -964,6 +1503,17 @@ function endSnackStorm()
 	nextStormIn = BrainrotData.STORM_INTERVAL
 	local wall = Workspace:WaitForChild("StormWall")
 	wall.CFrame = CFrame.new(0, 20, -300)
+	-- The Boss escapes when the storm ends, unless the players defeated him.
+	if boss.model ~= nil then
+		if boss.model.Parent ~= nil then
+			boss.model:Destroy()
+		end
+		boss.model = nil
+		if not boss.defeated then
+			broadcastNotify("The Poltergeist Boss escaped into the fog...")
+			GameEvent:FireAllClients({ type = "Boss", active = false })
+		end
+	end
 	for player, state in pairs(playerState) do
 		GameEvent:FireClient(player, { type = "StormEnd" })
 		sendNotify(player, "The storm passed! The conveyor is running again.")
@@ -989,12 +1539,8 @@ local function onPlayerAction(player, action)
 			sendNotify(player, "You have no base to lock yet!")
 			return
 		end
-		local ok, message = bases:tryLock(state.base)
+		local _, message = bases:tryLock(state.base)
 		sendNotify(player, message)
-		if ok then
-			state.lockCount += 1
-			addQuestProgress(player, "lock-3", 1)
-		end
 
 	elseif action == "Rebirth" then
 		if state.base == nil then
@@ -1025,6 +1571,7 @@ local function onPlayerAction(player, action)
 			leaderstats.Rebirths.Value = state.stars
 		end
 		addQuestProgress(player, "rebirth-1", 1)
+		checkVaultUnlock(player)
 		sendNotify(player, "REBIRTH! Your income is now x" .. state.multiplier .. " forever!")
 		sendHudUpdate(player)
 
@@ -1089,18 +1636,23 @@ local function onPlayerAdded(player)
 		hasSpeedBoots = false,
 		hasGoldenGlove = false,
 		slapReadyAt = 0,
+		stunnedUntil = 0,
+		stormSlowedUntil = 0,
 		carrying = nil,
 		base = base,
 		quests = { progress = {}, done = {} },
 		indexFound = {},
+		setBonuses = {},
+		ghostsDefeated = 0,
+		bossDamage = 0,
+		vaultUnlocked = false,
 		punishedThisStorm = false,
-		lockCount = 0,
 	}
 
 	if base == nil then
 		sendNotify(player, "All six bases are taken — hang around until a plot frees up!")
 	else
-		sendNotify(player, "Welcome to Haunted Brainrot Manor! Your base is Base " .. base.index .. ". Touch a brainrot on the haunted hallway to buy it!")
+		sendNotify(player, "Welcome to Haunted Brainrot Manor! GOAL: complete the Prize Book (36) and defeat the Poltergeist Boss to open the Vault. Your base is Base " .. base.index .. " — buy a brainrot on the hallway (touch it or press E)!")
 	end
 
 	player.CharacterAdded:Connect(function(character)
