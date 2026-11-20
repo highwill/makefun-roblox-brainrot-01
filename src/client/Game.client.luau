@@ -5,20 +5,26 @@
 -- player clicks. Every keybind goes through ContextActionService, so the game
 -- never fights Roblox's own input handling.
 --
--- Layout, fixed zones so nothing piles up:
---   top-center bar: small title + cash + $/s, one row
---   top-right: rebirth + multiplier + slots
---   one event banner under the top bar (storm / boss HP / burglar / ghosts)
+-- Layout, fixed zones so nothing piles up (scale-based, so it holds at any
+-- viewport from a small Studio window up to 1920x1080):
+--   top-center bar, inset below Roblox's own top bar and clear of the chat
+--   window (left) and the leaderboard (right): row 1 title + cash + $/s,
+--   row 2 rebirth + multiplier + slots in ONE label, one line
+--   one event banner under the top bar (storm / boss HP / burglar / ghosts),
+--   fully opaque, text scaled to fit
 --   one objective line under the banner: the next thing to do
---   left: quests, 3 rows visible, scrollable, collapsible
---   right: Prize Book progress + per-rarity set bonuses, collapsible
---   bottom: goal tracker, then the 5 verb buttons, one row, no subtext
+--   left: quests, scrollable, collapsible; right: Prize Book, scrollable,
+--   collapsible — both sized in scale with min/max clamps, so no row clips
+--   bottom: status, goal tracker, then the 5 verb buttons, one row
+--   the backpack UI is off: the Slap Glove's name never prints over the
+--   buttons (the tool still works when equipped)
 -- Brainrot name tags are distance-culled: the 4 nearest within 25 studs get a
 -- full label, further ones get a small rarity dot, beyond 60 studs nothing.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ContextActionService = game:GetService("ContextActionService")
+local StarterGui = game:GetService("StarterGui")
 local Workspace = game:GetService("Workspace")
 
 local player = Players.LocalPlayer
@@ -35,6 +41,13 @@ gui.Name = "ManorHud"
 gui.ResetOnSpawn = false
 gui.Parent = player:WaitForChild("PlayerGui")
 
+-- The backpack UI (hotbar + equipped-tool name) stays off: the "Slap Glove"
+-- label used to print over the button row. The glove still works when
+-- equipped; only its name tag and hotbar slot are hidden.
+pcall(function()
+	StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
+end)
+
 local function makeCorner(parent, radius)
 	local corner = Instance.new("UICorner")
 	corner.CornerRadius = UDim.new(0, radius)
@@ -42,96 +55,97 @@ local function makeCorner(parent, radius)
 	return corner
 end
 
--- Top bar, centred: small title, big cash, income per second. One row.
+-- Top bar, centred, inset below Roblox's own top bar (y=48) and clear of
+-- the chat window (left) and the leaderboard (right). Row 1 is the title,
+-- cash and income; row 2 is rebirth, multiplier and slots in ONE label, so
+-- the stats can never jumble. Width is scale-based, text is scaled to fit.
 local topBar = Instance.new("Frame")
 topBar.Name = "TopBar"
 topBar.AnchorPoint = Vector2.new(0.5, 0)
-topBar.Position = UDim2.new(0.5, 0, 0, 4)
-topBar.Size = UDim2.fromOffset(560, 34)
+topBar.Position = UDim2.new(0.5, 0, 0, 48)
+topBar.Size = UDim2.new(0.38, 0, 0, 54)
 topBar.BackgroundColor3 = Color3.fromRGB(20, 14, 35)
-topBar.BackgroundTransparency = 0.1
+topBar.BackgroundTransparency = 0
 topBar.BorderSizePixel = 0
 topBar.Parent = gui
 makeCorner(topBar, 10)
 
 local titleLabel = Instance.new("TextLabel")
 titleLabel.Name = "Title"
-titleLabel.Position = UDim2.new(0, 10, 0, 0)
-titleLabel.Size = UDim2.fromOffset(180, 34)
+titleLabel.Position = UDim2.new(0, 8, 0, 0)
+titleLabel.Size = UDim2.new(0.40, -8, 0, 30)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = "👻 HAUNTED BRAINROT MANOR"
+titleLabel.Text = "👻 BRAINROT MANOR"
 titleLabel.TextColor3 = Color3.fromRGB(200, 170, 255)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 14
+titleLabel.TextScaled = true
 titleLabel.TextXAlignment = Enum.TextXAlignment.Left
 titleLabel.Parent = topBar
+local titleSizeCap = Instance.new("UITextSizeConstraint")
+titleSizeCap.MaxTextSize = 14
+titleSizeCap.Parent = titleLabel
 
 local cashLabel = Instance.new("TextLabel")
 cashLabel.Name = "Cash"
-cashLabel.Position = UDim2.new(0, 200, 0, 0)
-cashLabel.Size = UDim2.fromOffset(200, 34)
+cashLabel.Position = UDim2.new(0.40, 0, 0, 0)
+cashLabel.Size = UDim2.new(0.32, 0, 0, 30)
 cashLabel.BackgroundTransparency = 1
 cashLabel.Text = "$100"
 cashLabel.TextColor3 = Color3.fromRGB(140, 255, 140)
 cashLabel.Font = Enum.Font.GothamBold
 cashLabel.TextSize = 22
+cashLabel.TextScaled = true
 cashLabel.Parent = topBar
+local cashSizeCap = Instance.new("UITextSizeConstraint")
+cashSizeCap.MaxTextSize = 22
+cashSizeCap.Parent = cashLabel
 
 local incomeLabel = Instance.new("TextLabel")
 incomeLabel.Name = "Income"
-incomeLabel.Position = UDim2.new(0, 400, 0, 0)
-incomeLabel.Size = UDim2.fromOffset(150, 34)
+incomeLabel.Position = UDim2.new(0.72, 0, 0, 0)
+incomeLabel.Size = UDim2.new(0.28, -8, 0, 30)
 incomeLabel.BackgroundTransparency = 1
 incomeLabel.Text = "+$0/s"
 incomeLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
 incomeLabel.Font = Enum.Font.GothamBold
 incomeLabel.TextSize = 17
+incomeLabel.TextScaled = true
 incomeLabel.TextXAlignment = Enum.TextXAlignment.Right
 incomeLabel.Parent = topBar
+local incomeSizeCap = Instance.new("UITextSizeConstraint")
+incomeSizeCap.MaxTextSize = 17
+incomeSizeCap.Parent = incomeLabel
 
--- Top-right: rebirth count + multiplier, and slots used.
-local topRight = Instance.new("Frame")
-topRight.Name = "TopRight"
-topRight.AnchorPoint = Vector2.new(1, 0)
-topRight.Position = UDim2.new(1, -12, 0, 4)
-topRight.Size = UDim2.fromOffset(200, 34)
-topRight.BackgroundColor3 = Color3.fromRGB(20, 14, 35)
-topRight.BackgroundTransparency = 0.1
-topRight.BorderSizePixel = 0
-topRight.Parent = gui
-makeCorner(topRight, 10)
+-- Row 2: rebirth, multiplier and slots in one label on one line. Two labels
+-- on two lines in a 34px corner panel is what made the stats jumble.
+local statsLabel = Instance.new("TextLabel")
+statsLabel.Name = "Stats"
+statsLabel.Position = UDim2.new(0, 0, 0, 30)
+statsLabel.Size = UDim2.new(1, 0, 0, 24)
+statsLabel.BackgroundTransparency = 1
+statsLabel.Text = "REBIRTH 0  ·  x1 MULT  ·  SLOTS 0/8"
+statsLabel.TextColor3 = Color3.fromRGB(200, 170, 255)
+statsLabel.Font = Enum.Font.GothamBold
+statsLabel.TextSize = 13
+statsLabel.TextScaled = true
+statsLabel.Parent = topBar
+local statsSizeCap = Instance.new("UITextSizeConstraint")
+statsSizeCap.MaxTextSize = 13
+statsSizeCap.Parent = statsLabel
 
-local rebirthLabel = Instance.new("TextLabel")
-rebirthLabel.Name = "Rebirth"
-rebirthLabel.Position = UDim2.new(0, 0, 0, 2)
-rebirthLabel.Size = UDim2.new(1, 0, 0, 15)
-rebirthLabel.BackgroundTransparency = 1
-rebirthLabel.Text = "REBIRTH 0  ·  x1 MULT"
-rebirthLabel.TextColor3 = Color3.fromRGB(200, 170, 255)
-rebirthLabel.Font = Enum.Font.GothamBold
-rebirthLabel.TextSize = 13
-rebirthLabel.Parent = topRight
-
-local slotsLabel = Instance.new("TextLabel")
-slotsLabel.Name = "Slots"
-slotsLabel.Position = UDim2.new(0, 0, 0, 17)
-slotsLabel.Size = UDim2.new(1, 0, 0, 15)
-slotsLabel.BackgroundTransparency = 1
-slotsLabel.Text = "SLOTS 0/8"
-slotsLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-slotsLabel.Font = Enum.Font.GothamBold
-slotsLabel.TextSize = 13
-slotsLabel.Parent = topRight
+-- No separate top-right panel: the leaderboard lives in that corner, and
+-- the stats now ride row 2 of the top bar (statsLabel above).
 
 -- The one event banner: storm countdown, live storm, Boss HP, burglar alert,
 -- or ghosts loose. Exactly one of them, never two stacked.
 local eventBanner = Instance.new("Frame")
 eventBanner.Name = "EventBanner"
 eventBanner.AnchorPoint = Vector2.new(0.5, 0)
-eventBanner.Position = UDim2.new(0.5, 0, 0, 44)
-eventBanner.Size = UDim2.fromOffset(720, 40)
+eventBanner.Position = UDim2.new(0.5, 0, 0, 110)
+eventBanner.Size = UDim2.new(0.52, 0, 0, 40)
 eventBanner.BackgroundColor3 = Color3.fromRGB(35, 25, 60)
-eventBanner.BackgroundTransparency = 0.1
+eventBanner.BackgroundTransparency = 0
 eventBanner.BorderSizePixel = 0
 eventBanner.Parent = gui
 makeCorner(eventBanner, 10)
@@ -145,7 +159,11 @@ eventBannerText.Text = "NEXT POLTERGEIST STORM 2:30"
 eventBannerText.TextColor3 = Color3.fromRGB(220, 210, 255)
 eventBannerText.Font = Enum.Font.GothamBold
 eventBannerText.TextSize = 19
+eventBannerText.TextScaled = true
 eventBannerText.Parent = eventBanner
+local bannerSizeCap = Instance.new("UITextSizeConstraint")
+bannerSizeCap.MaxTextSize = 19
+bannerSizeCap.Parent = eventBannerText
 
 local bossBarBack = Instance.new("Frame")
 bossBarBack.Name = "BossBarBack"
@@ -167,25 +185,33 @@ bossBarFill.Parent = bossBarBack
 local objectiveLabel = Instance.new("TextLabel")
 objectiveLabel.Name = "Objective"
 objectiveLabel.AnchorPoint = Vector2.new(0.5, 0)
-objectiveLabel.Position = UDim2.new(0.5, 0, 0, 88)
-objectiveLabel.Size = UDim2.fromOffset(720, 18)
+objectiveLabel.Position = UDim2.new(0.5, 0, 0, 154)
+objectiveLabel.Size = UDim2.new(0.56, 0, 0, 18)
 objectiveLabel.BackgroundTransparency = 1
 objectiveLabel.Text = ""
 objectiveLabel.TextColor3 = Color3.fromRGB(180, 255, 180)
 objectiveLabel.Font = Enum.Font.GothamBold
 objectiveLabel.TextSize = 14
+objectiveLabel.TextScaled = true
 objectiveLabel.Parent = gui
+local objectiveSizeCap = Instance.new("UITextSizeConstraint")
+objectiveSizeCap.MaxTextSize = 14
+objectiveSizeCap.Parent = objectiveLabel
 
 -- Quest panel, left side: 3 rows visible, the rest scrolls. Collapsible.
 local questPanel = Instance.new("Frame")
 questPanel.Name = "QuestPanel"
-questPanel.Position = UDim2.new(0, 12, 0, 130)
-questPanel.Size = UDim2.fromOffset(300, 140)
+questPanel.Position = UDim2.new(0, 12, 0, 180)
+questPanel.Size = UDim2.new(0, 300, 0.30, 0)
 questPanel.BackgroundColor3 = Color3.fromRGB(20, 14, 35)
 questPanel.BackgroundTransparency = 0.15
 questPanel.BorderSizePixel = 0
 questPanel.Parent = gui
 makeCorner(questPanel, 12)
+local questSizeCap = Instance.new("UISizeConstraint")
+questSizeCap.MinSize = Vector2.new(300, 120)
+questSizeCap.MaxSize = Vector2.new(300, 200)
+questSizeCap.Parent = questPanel
 
 local questHeader = Instance.new("TextButton")
 questHeader.Name = "Header"
@@ -230,7 +256,7 @@ questHeader.MouseButton1Click:Connect(function()
 		questPanel.Size = UDim2.fromOffset(300, 32)
 		questScroll.Visible = false
 	else
-		questPanel.Size = UDim2.fromOffset(300, 140)
+		questPanel.Size = UDim2.new(0, 300, 0.30, 0)
 		questScroll.Visible = true
 	end
 end)
@@ -240,13 +266,17 @@ end)
 local bookPanel = Instance.new("Frame")
 bookPanel.Name = "PrizeBookPanel"
 bookPanel.AnchorPoint = Vector2.new(1, 0)
-bookPanel.Position = UDim2.new(1, -12, 0, 130)
-bookPanel.Size = UDim2.fromOffset(300, 224)
+bookPanel.Position = UDim2.new(1, -12, 0, 180)
+bookPanel.Size = UDim2.new(0, 300, 0.30, 0)
 bookPanel.BackgroundColor3 = Color3.fromRGB(20, 14, 35)
 bookPanel.BackgroundTransparency = 0.15
 bookPanel.BorderSizePixel = 0
 bookPanel.Parent = gui
 makeCorner(bookPanel, 12)
+local bookSizeCap = Instance.new("UISizeConstraint")
+bookSizeCap.MinSize = Vector2.new(300, 150)
+bookSizeCap.MaxSize = Vector2.new(300, 240)
+bookSizeCap.Parent = bookPanel
 
 local bookHeader = Instance.new("TextButton")
 bookHeader.Name = "Header"
@@ -273,11 +303,23 @@ bookBarFill.BackgroundColor3 = Color3.fromRGB(140, 255, 140)
 bookBarFill.BorderSizePixel = 0
 bookBarFill.Parent = bookBarBack
 
+-- The rarity rows ride a ScrollingFrame, so the 8th row can never be cut
+-- off at the panel's bottom edge, however short the viewport is.
+local bookScroll = Instance.new("ScrollingFrame")
+bookScroll.Name = "Sets"
+bookScroll.Position = UDim2.new(0, 0, 0, 50)
+bookScroll.Size = UDim2.new(1, 0, 1, -56)
+bookScroll.BackgroundTransparency = 1
+bookScroll.BorderSizePixel = 0
+bookScroll.ScrollBarThickness = 5
+bookScroll.CanvasSize = UDim2.new(0, 0, 0, #BrainrotData.RARITY_ORDER * 19)
+bookScroll.Parent = bookPanel
+
 local setRows = {}
 for i, rarity in ipairs(BrainrotData.RARITY_ORDER) do
 	local row = Instance.new("TextLabel")
 	row.Name = "Set_" .. rarity
-	row.Position = UDim2.new(0, 10, 0, 52 + (i - 1) * 20)
+	row.Position = UDim2.new(0, 10, 0, (i - 1) * 19)
 	row.Size = UDim2.new(1, -20, 0, 18)
 	row.BackgroundTransparency = 1
 	row.Text = rarity .. "  0/" .. BrainrotData.getRarityTotal(rarity)
@@ -285,7 +327,7 @@ for i, rarity in ipairs(BrainrotData.RARITY_ORDER) do
 	row.Font = Enum.Font.Gotham
 	row.TextSize = 13
 	row.TextXAlignment = Enum.TextXAlignment.Left
-	row.Parent = bookPanel
+	row.Parent = bookScroll
 	setRows[rarity] = row
 end
 
@@ -295,15 +337,11 @@ bookHeader.MouseButton1Click:Connect(function()
 	if bookCollapsed then
 		bookPanel.Size = UDim2.fromOffset(300, 32)
 		bookBarBack.Visible = false
-		for _, row in pairs(setRows) do
-			row.Visible = false
-		end
+		bookScroll.Visible = false
 	else
-		bookPanel.Size = UDim2.fromOffset(300, 224)
+		bookPanel.Size = UDim2.new(0, 300, 0.30, 0)
 		bookBarBack.Visible = true
-		for _, row in pairs(setRows) do
-			row.Visible = true
-		end
+		bookScroll.Visible = true
 	end
 end)
 
@@ -311,21 +349,25 @@ end)
 local goalTracker = Instance.new("TextLabel")
 goalTracker.Name = "GoalTracker"
 goalTracker.AnchorPoint = Vector2.new(0.5, 1)
-goalTracker.Position = UDim2.new(0.5, 0, 1, -88)
-goalTracker.Size = UDim2.fromOffset(760, 20)
+goalTracker.Position = UDim2.new(0.5, 0, 1, -80)
+goalTracker.Size = UDim2.new(0.60, 0, 0, 20)
 goalTracker.BackgroundTransparency = 1
 goalTracker.Text = "GOAL: Prize Book 0/36 · Boss in 2:30 · Vault: LOCKED"
 goalTracker.TextColor3 = Color3.fromRGB(255, 210, 90)
 goalTracker.Font = Enum.Font.GothamBold
 goalTracker.TextSize = 15
+goalTracker.TextScaled = true
 goalTracker.Parent = gui
+local goalSizeCap = Instance.new("UITextSizeConstraint")
+goalSizeCap.MaxTextSize = 15
+goalSizeCap.Parent = goalTracker
 
 -- Carrying banner, just above the goal tracker.
 local carryLabel = Instance.new("TextLabel")
 carryLabel.Name = "CarryHint"
 carryLabel.AnchorPoint = Vector2.new(0.5, 1)
 carryLabel.Position = UDim2.new(0.5, 0, 1, -116)
-carryLabel.Size = UDim2.fromOffset(560, 36)
+carryLabel.Size = UDim2.new(0.44, 0, 0, 36)
 carryLabel.BackgroundColor3 = Color3.fromRGB(200, 110, 20)
 carryLabel.BackgroundTransparency = 0.1
 carryLabel.BorderSizePixel = 0
@@ -333,21 +375,27 @@ carryLabel.Text = ""
 carryLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
 carryLabel.Font = Enum.Font.GothamBold
 carryLabel.TextSize = 18
+carryLabel.TextScaled = true
 carryLabel.Visible = false
 carryLabel.Parent = gui
 makeCorner(carryLabel, 10)
+local carrySizeCap = Instance.new("UITextSizeConstraint")
+carrySizeCap.MaxTextSize = 18
+carrySizeCap.Parent = carryLabel
 
 -- Status line for server replies ("Base locked for 60s", "Not enough cash"...).
 local statusLabel = Instance.new("TextLabel")
 statusLabel.Name = "Status"
 statusLabel.AnchorPoint = Vector2.new(0.5, 1)
 statusLabel.Position = UDim2.new(0.5, 0, 1, -158)
-statusLabel.Size = UDim2.fromOffset(600, 28)
+statusLabel.Size = UDim2.new(0.24, 0, 0, 40)
 statusLabel.BackgroundTransparency = 1
 statusLabel.Text = ""
 statusLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
 statusLabel.Font = Enum.Font.GothamBold
-statusLabel.TextSize = 16
+statusLabel.TextSize = 15
+statusLabel.TextWrapped = true
+statusLabel.TextYAlignment = Enum.TextYAlignment.Top
 statusLabel.TextStrokeTransparency = 0.4
 statusLabel.Parent = gui
 
@@ -390,11 +438,13 @@ local rebirthButton = makeButton("RebirthButton", "⭐ REBIRTH [R]", Color3.from
 local indexButton = makeButton("IndexButton", "📖 INDEX [B]", Color3.fromRGB(60, 170, 90))
 
 -- Upgrades panel, hidden until UPGRADES is pressed: the two real upgrades.
+-- Narrow and stacked (180 wide) so it fits in the gap between the side
+-- panels instead of overlapping them.
 local upgradesPanel = Instance.new("Frame")
 upgradesPanel.Name = "UpgradesPanel"
 upgradesPanel.AnchorPoint = Vector2.new(0.5, 1)
 upgradesPanel.Position = UDim2.new(0.5, 0, 1, -196)
-upgradesPanel.Size = UDim2.fromOffset(340, 60)
+upgradesPanel.Size = UDim2.fromOffset(180, 112)
 upgradesPanel.BackgroundColor3 = Color3.fromRGB(20, 14, 35)
 upgradesPanel.BackgroundTransparency = 0.1
 upgradesPanel.BorderSizePixel = 0
@@ -405,7 +455,7 @@ makeCorner(upgradesPanel, 10)
 local bootsButton = Instance.new("TextButton")
 bootsButton.Name = "BootsButton"
 bootsButton.Position = UDim2.new(0, 10, 0, 8)
-bootsButton.Size = UDim2.fromOffset(155, 44)
+bootsButton.Size = UDim2.fromOffset(160, 44)
 bootsButton.BackgroundColor3 = Color3.fromRGB(60, 170, 90)
 bootsButton.BorderSizePixel = 0
 bootsButton.Text = "🥾 Speed Boots\n$5,000"
@@ -418,8 +468,8 @@ makeCorner(bootsButton, 8)
 
 local gloveButton = Instance.new("TextButton")
 gloveButton.Name = "GloveButton"
-gloveButton.Position = UDim2.new(1, -165, 0, 8)
-gloveButton.Size = UDim2.fromOffset(155, 44)
+gloveButton.Position = UDim2.new(0, 10, 0, 60)
+gloveButton.Size = UDim2.fromOffset(160, 44)
 gloveButton.BackgroundColor3 = Color3.fromRGB(200, 150, 40)
 gloveButton.BorderSizePixel = 0
 gloveButton.Text = "🧤 Golden Glove\n$2,500"
@@ -436,13 +486,17 @@ local indexPanel = Instance.new("Frame")
 indexPanel.Name = "IndexPanel"
 indexPanel.AnchorPoint = Vector2.new(0.5, 0.5)
 indexPanel.Position = UDim2.fromScale(0.5, 0.5)
-indexPanel.Size = UDim2.fromOffset(540, 500)
+indexPanel.Size = UDim2.new(0.45, 0, 0.72, 0)
 indexPanel.BackgroundColor3 = Color3.fromRGB(20, 14, 35)
 indexPanel.BackgroundTransparency = 0.05
 indexPanel.BorderSizePixel = 0
 indexPanel.Visible = false
 indexPanel.Parent = gui
 makeCorner(indexPanel, 12)
+local indexSizeCap = Instance.new("UISizeConstraint")
+indexSizeCap.MinSize = Vector2.new(380, 320)
+indexSizeCap.MaxSize = Vector2.new(540, 500)
+indexSizeCap.Parent = indexPanel
 
 local indexHeader = Instance.new("TextLabel")
 indexHeader.Name = "Header"
@@ -688,8 +742,7 @@ GameEvent.OnClientEvent:Connect(function(payload)
 	if payload.type == "Hud" then
 		cashLabel.Text = BrainrotData.formatMoney(payload.cash)
 		incomeLabel.Text = "+" .. BrainrotData.formatMoney(payload.income) .. "/s"
-		rebirthLabel.Text = "REBIRTH " .. payload.stars .. "  ·  x" .. payload.multiplier .. " MULT"
-		slotsLabel.Text = "SLOTS " .. payload.slotsUsed .. "/" .. payload.slotsTotal
+		statsLabel.Text = "REBIRTH " .. payload.stars .. "  ·  x" .. payload.multiplier .. " MULT  ·  SLOTS " .. payload.slotsUsed .. "/" .. payload.slotsTotal
 
 		-- The one event banner, by priority: Boss HP, burglar, storm, ghosts,
 		-- storm warning, countdown. Never two at once.

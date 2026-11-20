@@ -510,7 +510,7 @@ end
 -- to the Crypt Gate. forceMutation (storm spawns) guarantees a mutation and
 -- lets the walk run through the storm; normal brainrots freeze while the storm
 -- rages, because the conveyor pauses.
-local function spawnConveyorBrainrot(forceMutation)
+local function spawnConveyorBrainrot(forceMutation, startElapsed)
 	local def = BrainrotData.pickBrainrotDef()
 	local mutation = nil
 	if forceMutation then
@@ -538,7 +538,7 @@ local function spawnConveyorBrainrot(forceMutation)
 	end)
 
 	task.spawn(function()
-		local elapsed = 0
+		local elapsed = startElapsed or 0
 		while elapsed < BrainrotData.CONVEYOR_TIME do
 			if model.Parent == nil then
 				return -- bought, stolen or destroyed; the walk is over
@@ -559,6 +559,11 @@ local function spawnConveyorBrainrot(forceMutation)
 		end
 	end)
 end
+
+-- Pre-fill the lane so the first view is alive from second zero: two
+-- brainrots already partway down the hallway when the server starts.
+spawnConveyorBrainrot(false, 8)
+spawnConveyorBrainrot(false, 17)
 
 -- The conveyor loop: one new brainrot every SPAWN_INTERVAL seconds, paused
 -- while the storm sweeps the grounds.
