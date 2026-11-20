@@ -399,6 +399,27 @@ statusLabel.TextYAlignment = Enum.TextYAlignment.Top
 statusLabel.TextStrokeTransparency = 0.4
 statusLabel.Parent = gui
 
+-- Build tag, bottom-right corner: tells the player (and the builder) at a
+-- glance which build is open, so a stale file can never be mistaken for the
+-- latest one. Small, dim, in the bottom strip below the button row, clear of
+-- the centred HUD. Bump the number on every build handed to the player.
+local buildTag = Instance.new("TextLabel")
+buildTag.Name = "BuildTag"
+buildTag.AnchorPoint = Vector2.new(1, 1)
+buildTag.Position = UDim2.new(1, -8, 1, -8)
+buildTag.Size = UDim2.new(0, 170, 0, 16)
+buildTag.BackgroundTransparency = 1
+buildTag.Text = "MANOR v5 · POLISH"
+buildTag.TextColor3 = Color3.fromRGB(150, 130, 200)
+buildTag.Font = Enum.Font.GothamBold
+buildTag.TextSize = 11
+buildTag.TextScaled = true
+buildTag.TextXAlignment = Enum.TextXAlignment.Right
+buildTag.Parent = gui
+local buildTagSizeCap = Instance.new("UITextSizeConstraint")
+buildTagSizeCap.MaxTextSize = 11
+buildTagSizeCap.Parent = buildTag
+
 -- Bottom buttons: LOCK / WHACK / UPGRADES / REBIRTH / INDEX, with keybinds.
 -- One row, one line of text each.
 local buttonRow = Instance.new("Frame")
